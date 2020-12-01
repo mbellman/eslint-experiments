@@ -1,0 +1,23 @@
+{
+  "name": "eslint-experiments",
+  "version": "1.0.0",
+  "description": "ESLint experiments",
+  "main": "index.js",
+  "devDependencies": {
+    "eslint": "^7.14.0",
+    "eslint-plugin-experiments": "file:plugin"
+  },
+  "scripts": {
+    "check": "eslint samples/**/*.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mbellman/eslint-experiments.git"
+  },
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/mbellman/eslint-experiments/issues"
+  },
+  "homepage": "https://github.com/mbellman/eslint-experiments#readme"
+}

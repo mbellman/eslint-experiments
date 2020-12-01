@@ -1,0 +1,8 @@
+{
+  "name": "eslint-plugin-experiments",
+  "version": "1.0.0",
+  "main": "index.js",
+  "devDependencies": {
+    "micromatch": "^4.0.2"
+  }
+}

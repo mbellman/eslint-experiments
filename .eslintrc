@@ -1,0 +1,10 @@
+{
+  "plugins": ["experiments"],
+  "parserOptions": {
+    "ecmaVersion": 2020,
+    "sourceType": "module"
+  },
+  "rules": {
+    "experiments/group-imports": 1
+  }
+}
