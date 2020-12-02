@@ -4,6 +4,7 @@
   "description": "ESLint experiments",
   "main": "index.js",
   "devDependencies": {
+    "@types/node": "^14.14.10",
     "eslint": "^7.14.0",
     "eslint-plugin-experiments": "file:plugin"
   },

@@ -36,12 +36,27 @@ const { groups } = require('./configuration');
  */
 
 /**
+ * @typedef ImportWeight
+ * @property {number} group
+ * @property {number} pattern
+ * @property {number} type
+ * @property {string} name
+ */
+
+/**
  * @typedef ImportRecord
  * @property {string} defaultImport
  * @property {string} namespaceImport
  * @property {SingleImport[]} singleImports
  * @property {string} path
+ * @property {ImportWeight} weight
+ * @property {ImportNode} node
  */
+
+/**
+ * @type {number}
+ */
+const LINE_BREAK_LENGTH = process.platform === 'win32' ? 2 : 1;
 
 /**
  * @param {ASTNode} node
@@ -77,29 +92,6 @@ const isSingleImportSpecifier = ({ type }) => type === 'ImportSpecifier';
  * @returns {string}
  */
 const getImportSpecifierName = ({ local: { name } }) => name;
-
-/**
- * @param {ImportNode} importNode
- *
- * @returns {ImportRecord}
- */
-function createImportRecord(importNode) {
-  const { specifiers } = importNode;
-  const defaultImport = specifiers.filter(isDefaultImportSpecifier).map(getImportSpecifierName).pop();
-  const namespaceImport = specifiers.filter(isNamespaceImportSpecifier).map(getImportSpecifierName).pop();
-
-  const singleImports = specifiers.filter(isSingleImportSpecifier).map(specifier => ({
-    name: specifier.imported.name,
-    alias: specifier.local.name
-  }));
-
-  return {
-    defaultImport,
-    namespaceImport,
-    singleImports,
-    path: importNode.source.value
-  };
-}
 
 /**
  * @example
@@ -235,12 +227,182 @@ function getImportRecordAsCodeString(importRecord) {
 }
 
 /**
+ * @param {string} defaultImport
+ * @param {string} namespaceImport
+ * @param {SingleImport[]} singleImports
+ * @param {string} path
+ *
+ * @returns {ImportWeight}
+ */
+function getImportWeight(defaultImport, namespaceImport, singleImports, path) {
+  for (let i = 0; i < groups.length; i++) {
+    const group = groups[i];
+
+    for (let j = 0; j < group.length; j++) {
+      const pattern = group[j];
+
+      if (micromatch.isMatch(path, pattern)) {
+        const typeWeight =
+          defaultImport ? 0 :
+          namespaceImport ? 1 :
+          2;
+
+        return {
+          group: i,
+          pattern: j,
+          type: typeWeight,
+          name: defaultImport || namespaceImport || singleImports[0].alias
+        };
+      }
+    }
+  }
+
+  return {
+    group: 0,
+    pattern: 0,
+    type: 0,
+    name: ''
+  };
+}
+
+/**
+ * @param {ImportWeight} importWeight
+ *
+ * @returns {number}
+ */
+function getNumericImportWeight({ group, pattern, type }) {
+  return 1e6 * group + 1e3 * pattern + type;
+}
+
+/**
+ * @param {ImportNode} importNode
+ *
+ * @returns {ImportRecord}
+ */
+function createImportRecord(importNode) {
+  const { specifiers } = importNode;
+  const defaultImport = specifiers.filter(isDefaultImportSpecifier).map(getImportSpecifierName).pop();
+  const namespaceImport = specifiers.filter(isNamespaceImportSpecifier).map(getImportSpecifierName).pop();
+
+  const singleImports = specifiers.filter(isSingleImportSpecifier).map(specifier => ({
+    name: specifier.imported.name,
+    alias: specifier.local.name
+  }));
+
+  const path = importNode.source.value;
+  const weight = getImportWeight(defaultImport, namespaceImport, singleImports, path);
+
+  return {
+    defaultImport,
+    namespaceImport,
+    singleImports,
+    path,
+    weight,
+    node: importNode
+  };
+}
+
+/**
+ * @param {ImportWeight} weightA
+ * @param {ImportWeight} weightB
+ *
+ * @returns {boolean}
+ */
+function areImportWeightsSequential(weightA, weightB) {
+  const numericWeightA = getNumericImportWeight(weightA);
+  const numericWeightB = getNumericImportWeight(weightB);
+
+  if (numericWeightA < numericWeightB) {
+    return true;
+  } else if (numericWeightA === numericWeightB) {
+    return weightA.name < weightB.name;
+  } else {
+    return false;
+  }
+}
+
+/**
+ * @param {ImportWeight} weightA
+ * @param {ImportWeight} weightB
+ *
+ * @returns {boolean}
+ */
+function areImportWeightsEqual(weightA, weightB) {
+  return (
+    weightA.group === weightB.group &&
+    weightA.pattern === weightB.pattern &&
+    weightA.type === weightB.type &&
+    weightA.name === weightB.name
+  );
+}
+
+/**
+ * @param {ImportRecord[]} importRecords
+ *
+ * @returns {boolean}
+ */
+function areImportRecordsCorrectlyGrouped(importRecords) {
+  for (let i = 0; i < importRecords.length - 1; i++) {
+    const currentImportRecord = importRecords[i];
+    const nextImportRecord = importRecords[i + 1];
+
+    if (!areImportWeightsSequential(currentImportRecord.weight, nextImportRecord.weight)) {
+      return false;
+    }
+
+    if (
+      currentImportRecord.weight.group < nextImportRecord.weight.group &&
+      nextImportRecord.node.start - currentImportRecord.node.end < LINE_BREAK_LENGTH * 2
+    ) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+/**
+ * @param {ImportRecord[]} importRecords
+ *
+ * @returns {string}
+ */
+function getFixedImportRecords(importRecords) {
+  const sortedImportRecords = importRecords
+    .sort((recordA, recordB) => {
+      const { weight: weightA } = recordA;
+      const { weight: weightB } = recordB;
+
+      if (areImportWeightsEqual(weightA, weightB)) {
+        return 0;
+      }
+
+      return areImportWeightsSequential(weightA, weightB) ? -1 : 1;
+    });
+
+  return sortedImportRecords
+    .map((importRecord, index) => {
+      const codeString = getImportRecordAsCodeString(importRecord);
+      const nextImportRecord = sortedImportRecords[index + 1];
+
+      if (
+        !nextImportRecord ||
+        nextImportRecord.weight.group === importRecord.weight.group
+      ) {
+        return codeString;
+      } else {
+        return `${codeString}\n`;
+      }
+    })
+    .join('\n');
+}
+
+/**
  * @param {object} context 
  * @param {ASTNode} programNode
  * @param {[ number, number ]} range 
- * @param {ImportRecord[][]} groupedImportRecords 
+ * @param {ImportRecord[]} importRecords 
  */
-function reportUngroupedImports(context, programNode, [ start, end ], groupedImportRecords) {
+function reportUngroupedImports(context, programNode, [ start, end ], importRecords) {
   const sourceCode = context.getSourceCode();
 
   context.report({
@@ -253,9 +415,7 @@ function reportUngroupedImports(context, programNode, [ start, end ], groupedImp
     fix(fixer) {
       return fixer.replaceTextRange(
         [start, end],
-        groupedImportRecords
-          .map(importRecords => importRecords.map(getImportRecordAsCodeString).join('\n'))
-          .join('\n\n')
+        getFixedImportRecords(importRecords)
       );
     }
   })
@@ -267,50 +427,27 @@ module.exports = {
     fixable: 'code'
   },
   create(context) {
-    /**
-     * @type {ImportRecord[][]}
-     */
-    const groupedImportRecords = new Array(groups.length).fill(0).map(_ => []);
-
     return {
       Program(programNode) {
-        /**
-         * @type {ImportNode[]}
-         */
         const importNodes = programNode.body.filter(isImportNode);
 
         if (!importNodes.length) {
           return;
         }
 
-        importNodes.forEach(importNode => {
-          const importRecord = createImportRecord(importNode);
-          let hasBeenGrouped = false;
+        const importRecords = importNodes.map(createImportRecord);
 
-          for (let i = 0; i < groups.length && !hasBeenGrouped; i++) {
-            const group = groups[i];
+        if (!areImportRecordsCorrectlyGrouped(importRecords)) {
+          /**
+           * @type {[ number, number ]}
+           */
+          const lintingErrorRange = [
+            importNodes[0].start,
+            importNodes[importNodes.length - 1].end
+          ];
 
-            for (const match of group) {
-              if (micromatch.isMatch(importRecord.path, match)) {
-                groupedImportRecords[i].push(importRecord);
-
-                hasBeenGrouped = true;
-
-                break;
-              }
-            }
-          }
-        });
-
-        /**
-         * @type {[ number, number ]}
-         */
-        const range = [
-          importNodes[0].start,
-          importNodes[importNodes.length - 1].end
-        ];
-
-        reportUngroupedImports(context, programNode, range, groupedImportRecords);
+          reportUngroupedImports(context, programNode, lintingErrorRange, importRecords);
+        }
       }
     };
   }
